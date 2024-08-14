@@ -34,6 +34,8 @@ This enhancement introduces ClusterImagePolicy and ImagePolicy CRDs to independe
 As an OpenShift user, I want to verify the container images signed using [sigstore](https://docs.sigstore.dev/about/overview/)
 tools, so that I can utilize the increased security of my software supply chain.
 
+As an OpenShift user, I want to verify container images signed using the Sigstore BYOPKI feature with certificates from non-fulcio CA roots of trust, so that I can enhance the security of my software supply chain.
+
 ### Goals
 
 - ClusterImagePolicy is defined as cluster scoped CRD. ImagePolicy is defined as namespaced CRD.
@@ -48,6 +50,7 @@ tools, so that I can utilize the increased security of my software supply chain.
 - Providing a tool to mirror the signatures is out of the scope of this enhancement. In order to verify the signature, the disconnected users need to mirror signatures together with the application images.
 - Grant the application administrator the ability to weaken cluster-scoped policies, to avoid expanding the set of administrators capable of increasing cluster exposure to vulnerable images.
 - Grant the application administrator the ability to tighten cluster-scoped policies. This could be useful in the future, but we are deferring it to limit the amount of work needed for an initial implementation.
+- Supporting certificate identity matching with regular expressions during signature verification is not within the scope of this enhancement.
 
 ## Proposal
 
@@ -140,6 +143,7 @@ type PolicyRootOfTrust struct {
 	// policyType serves as the union's discriminator. Users are required to assign a value to this field, choosing one of the policy types that define the root of trust.
 	// "PublicKey" indicates that the policy relies on a sigstore publicKey and may optionally use a Rekor verification.
 	// "FulcioCAWithRekor" indicates that the policy is based on the Fulcio certification and incorporates a Rekor verification.
+	// "CustomCertificate" indicates that the policy is based on certificates not from Fulcio CA.
 	// +unionDiscriminator
 	// +kubebuilder:validation:Required
 	PolicyType PolicyType `json:"policyType"`
@@ -151,15 +155,18 @@ type PolicyRootOfTrust struct {
 	// https://github.com/sigstore/fulcio and https://github.com/sigstore/rekor
 	// +optional
 	FulcioCAWithRekor *FulcioCAWithRekor `json:"fulcioCAWithRekor,omitempty"`
+	// customCertificate defines the root of trust based on root and corresponding intermediate certificates not from Fulcio CA.
+	// +optional
+	CustomCertificate *CustomCertificate `json:"customCertificate,omitempty"`
 }
 
-// +kubebuilder:validation:Enum=PublicKey;FulcioCAWithRekor
+// +kubebuilder:validation:Enum=PublicKey;FulcioCAWithRekor;CustomCertificate
 type PolicyType string
 
 const (
-	PublicKeyRootOfTrust         PolicyType = "PublicKey"
-	FulcioCAWithRekorRootOfTrust PolicyType = "FulcioCAWithRekor"
-	BYOPKIRootOfTrust            PolicyType = "BYOPKI"
+	PublicKeyRootOfTrust              PolicyType = "PublicKey"
+	FulcioCAWithRekorRootOfTrust      PolicyType = "FulcioCAWithRekor"
+	CustomCertificateRootOfTrust      PolicyType = "CustomCertificate"
 )
 
 // PublicKey defines the root of trust based on a sigstore public key.
@@ -193,41 +200,28 @@ type FulcioCAWithRekor struct {
 	FulcioSubject PolicyFulcioSubject `json:"fulcioSubject,omitempty"`
 }
 
-// BYOPKI defines the root of trust based on Root CA(s) and corresponding intermediate certificates.
-type BYOPKI struct {
-	// CertificateChainData contains one or several intermediate certificates followed by the root CA certificate
-	// in the PEM format.
-	// which may contain one or several intermediate certificates followed by the root CA certificate.
-	// certificateChainData cannot be set if caRootsData or caIntermediatesData are set.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="self == '' || (self.CertificateAuthorityRootsData == '' && self.CertificateAuthorityIntermediatesData == '')", message="certificateChainData cannot be set if caRootsData or caIntermediatesData are set"
-	CertificateChainData []byte `json:"certificateChainData,omitempty"`
-
-	// CertificateAuthorityRootsData contains a certificate bundle PEM file containing one or more CA roots
-	// in the PEM format.
-	// caRootsData cannot be set if certificateChainData is set.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="self == '' || self.CertificateChainData == ''", message="CertificateAuthorityRoots cannot be set if CertificateChain is set"
+// CustomCertificate defines the root of trust based on Root CA(s) and corresponding intermediate certificates.
+type CustomCertificate struct {
+	// caRootsData contains base64-encoded data
+	// of a certificate bundle in PEM format, which includes one or more CA root certificates
+	// +kubebuilder:validation:Required
 	CertificateAuthorityRootsData []byte `json:"caRootsData,omitempty"`
 
-	// CertificateAuthorityIntermediatesData contains a certificate bundle PEM file containing one or more intermediate certificates
-	// in the PEM format.
-	// caIntermediatesData cannot be set if certificateChainData is set.
+	// caIntermediatesData contains base64-encoded data
+	// of a certificate bundle in PEM format, which includes one or more intermediate certificates
 	// caIntermediatesData requires CertificateAuthorityRoots to be set.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="self == '' || self.CertificateChainData == ''", message="caIntermediatesData cannot be set if certificateChainData is set"
 	// +kubebuilder:validation:XValidation:rule="self == '' || self.CertificateAuthorityRootsData != ''", message="caIntermediatesData requires caRootsData to be set"
 	CertificateAuthorityIntermediatesData []byte `json:"caIntermediatesData,omitempty"`
 
-	// CertificateIdentity must be set if any of the other fields are set.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="(self.CertificateChainData == '' && self.CertificateAuthorityRootsData == '' && self.caIntermediatesData == '') || self != ''", message="certificateIdentity must be set if any of certificateChainData, caRootsData, or caIntermediatesData are set"
-	// +kubebuilder:validation:XValidation:rule="self.Email != '' || self.Hostname != '' || self.IPAddress != ''", message="At least one of Email, Hostname, or IPAddress must be set in certificateIdentity"
-	CertificateIdentity CertificateIdentityEntity `json:"certificateIdentity,omitempty"`
+	// certificateSubjectIdentity defines the identity associated with the certificates
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self.Email != '' || self.Hostname != '' || self.IPAddress != ''", message="At least one of Email, Hostname, or IPAddress must be set in certificateSubjectIdentity"
+	CertificateSubjectIdentity CertificateSubject `json:"certificateSubjectIdentity,omitempty"`
 }
 
-// CertificateIdentityEntity defines the identity type associated with the certificate identity
-type CertificateIdentityEntity struct {
+// CertificateSubject defines the identity type associated with the certificate identity
+type CertificateSubject struct {
 	// Email address associated with the certificate identity.
 	// +optional
 	Email string `json:"email,omitempty"`
@@ -390,7 +384,7 @@ spec:
   scopes:
   - test0.com
   policy:
-    rootoftrust:
+    rootOfTrust:
       policyType: FulcioCAWithRekor
       fulcioCAWithRekor:
         fulciocadata: dGVzdC1jYS1kYXRhLWRhdGE=
@@ -414,7 +408,7 @@ spec:
   - test0.com	# this policy for test0.com and the policy from mypolicy-0 will be appended together
   - test1.com
   policy:
-    rootoftrust:
+    rootOfTrust:
       policyType: PublicKey
       publicKey:
         keydata: dGVzdC1rZXktZGF0YQ==
@@ -436,27 +430,10 @@ spec:
   - test0.com	# for test0.com, cluster policy will overwrite this policy
   - test2.com
   policy:
-    rootoftrust:
+    rootOfTrust:
       policyType: PublicKey
       publicKey:
         keydata: dGVzdC1rZXktZGF0YQ==
-```
-```yaml
-kind: ImagePolicy  # BYOPKI with certificate chain
-metadata:
-  name: byopkipolicy
-  namespace: testnamespace
-spec:
-  scopes:
-  - test0.com	# for test0.com, cluster policy will overwrite this policy
-  - test2.com
-  policy:
-    rootoftrust:
-      policyType: BYOPKI
-      byopki:
-        certificateChain: dGVzdC1rZXktZGF0YQ==
-        certificateIdentity:
-           email: test-user@test-domain.com  # Strictly match against the type (email) and corresponding value, no wildcards support.
 ```
 ```yaml
 kind: ImagePolicy
@@ -468,12 +445,12 @@ spec:
   - test0.com	# for test0.com, cluster policy will overwrite this policy
   - test2.com
   policy:
-    rootoftrust:
-      policyType: BYOPKI
-      byopki:
+    rootOfTrust:
+      policyType: CustomCertificate
+      CustomCertificate:
         caRootsData: dGVzdC1rZXktZGF0YQ==
-        certificateIdentity:
-           email: test-user@test-domain.com
+        certificateSubjectIdentity:
+           email: test-user@test-domain.com # Strictly match against the type (email) and corresponding value, no wildcards support.
 ```
 ```yaml
 kind: ImagePolicy
@@ -485,12 +462,12 @@ spec:
   - test0.com	# for test0.com, cluster policy will overwrite this policy
   - test2.com
   policy:
-    rootoftrust:
-      policyType: BYOPKI
-      byopki:
+    rootOfTrust:
+      policyType: CustomCertificate
+      customCertificate:
         caRootsData: dGVzdC1rZXktZGF0YQ==
         caIntermediatesData: dGVzdC1rZXktZGF0YL==
-        certificateIdentity:
+        certificateSubjectIdentity:
            email: test-user@test-domain.com
 ```
 
@@ -747,6 +724,6 @@ The OCP Node team is likely to be called upon in case of escalation with one of 
 Not applicable.
 
 ## Infrastructure Needed [optional]
-
+- [containers-policy.json](https://github.com/containers/image/blob/main/docs/containers-policy.json.5.md) supports non-fulcio CA roots of trust
 - Registry proxies like registry.k8s.io are not natively usable: https://github.com/containers/image/issues/1952
 Workaround: using remapIdentity
