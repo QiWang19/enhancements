@@ -34,6 +34,8 @@ This enhancement introduces ClusterImagePolicy and ImagePolicy CRDs to independe
 As an OpenShift user, I want to verify the container images signed using [sigstore](https://docs.sigstore.dev/about/overview/)
 tools, so that I can utilize the increased security of my software supply chain.
 
+As an OpenShift user, I want to verify container images signed using the Sigstore BYOPKI feature with certificates from non-fulcio CA roots of trust, so that I can enhance the security of my software supply chain.
+
 ### Goals
 
 - ClusterImagePolicy is defined as cluster scoped CRD. ImagePolicy is defined as namespaced CRD.
@@ -48,6 +50,7 @@ tools, so that I can utilize the increased security of my software supply chain.
 - Providing a tool to mirror the signatures is out of the scope of this enhancement. In order to verify the signature, the disconnected users need to mirror signatures together with the application images.
 - Grant the application administrator the ability to weaken cluster-scoped policies, to avoid expanding the set of administrators capable of increasing cluster exposure to vulnerable images.
 - Grant the application administrator the ability to tighten cluster-scoped policies. This could be useful in the future, but we are deferring it to limit the amount of work needed for an initial implementation.
+- Supporting certificate identity matching with regular expressions during signature verification is not within the scope of this enhancement.
 
 ## Proposal
 
@@ -723,5 +726,6 @@ Not applicable.
 
 ## Infrastructure Needed [optional]
 
+- [containers-policy.json](https://github.com/containers/image/blob/main/docs/containers-policy.json.5.md) supports non-fulcio CA roots of trust
 - Registry proxies like registry.k8s.io are not natively usable: https://github.com/containers/image/issues/1952
 Workaround: using remapIdentity
